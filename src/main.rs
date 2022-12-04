@@ -37,7 +37,15 @@ async fn main() -> anyhow::Result<()> {
         addr
     );
     info!("use Ctrl-C to stop the server and delete the pod");
-    let server = TcpListenerStream::new(TcpListener::bind(addr).await.unwrap())
+
+    tokio::spawn(listen(client, &selector, addr));
+
+
+    Ok(())
+}
+
+async fn listen(client: Client, selector: &BTreeMap<String, String>, addr: SocketAddr) -> anyhow::Result<()> {
+    TcpListenerStream::new(TcpListener::bind(addr).await.unwrap())
         .take_until(tokio::signal::ctrl_c())
         .try_for_each(|client_conn| async {
             if let Ok(peer_addr) = client_conn.peer_addr() {
@@ -47,7 +55,10 @@ async fn main() -> anyhow::Result<()> {
             let pApi: Api<Pod> = Api::default_namespaced(client.clone());
 
             let lp = selector_into_list_params(&selector);
-            let podList = pApi.list(&lp).await;
+            let podList = pApi.list(&lp).await?;
+
+            podList.iter()
+                .filter(|p| p.status.and_then(|s| s.conditions).and_then(|cc| cc.iter().any(|c| c.status == "Ready" && c)))
 
             tokio::spawn(async move {
                 if let Err(e) = forward_connection(&pApi, "example", 80, client_conn).await {
@@ -59,11 +70,7 @@ async fn main() -> anyhow::Result<()> {
             });
             // keep the server running
             Ok(())
-        });
-    if let Err(e) = server.await {
-        error!(error = &e as &dyn std::error::Error, "server error");
-    }
-
+        }).await?;
     Ok(())
 }
 
