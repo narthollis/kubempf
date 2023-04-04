@@ -6,3 +6,13 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+kube = { version = "0.76.0", features = ["runtime", "derive", "ws"] }
+k8s-openapi = { version = "0.16.0", features = ["v1_25"] }
+anyhow = "1.0.44"
+futures = "0.3.17"
+tokio = { version = "1.14.0", features = ["full"] }
+thiserror = "1.0.29"
+tracing = "0.1.36"
+tracing-subscriber = "0.3.3"
+tokio-stream = { version = "0.1.9", features = ["net"] }
+serde_json = "1.0.68"
