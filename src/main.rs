@@ -14,8 +14,8 @@ use k8s_openapi::api::core::v1::Pod;
 use k8s_openapi::api::core::v1::Service;
 use kube::{
     api::{Api, ListParams},
-    runtime::wait::{await_condition, conditions::is_pod_running},
-    Client, ResourceExt,
+    //runtime::wait::{await_condition, conditions::is_pod_running},
+    Client, //ResourceExt,
 };
 
 #[tokio::main]
@@ -23,10 +23,10 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
     let client = Client::try_default().await?;
 
-    let pods: Api<Pod> = Api::default_namespaced(client.clone());
+    //    let pods: Api<Pod> = Api::default_namespaced(client.clone());
     let services: Api<Service> = Api::default_namespaced(client.clone());
 
-    let service = services.get("example").await?;
+    let service = services.get("whoami").await?;
     let selector = service.spec.and_then(|s| s.selector).unwrap();
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
@@ -38,13 +38,12 @@ async fn main() -> anyhow::Result<()> {
     );
     info!("use Ctrl-C to stop the server and delete the pod");
 
-    tokio::spawn(listen(client, &selector, addr));
+    let srv = tokio::spawn(listen(client, selector_into_list_params(&selector), addr, pod_port));
 
-
-    Ok(())
+    srv.await?
 }
 
-async fn listen(client: Client, selector: &BTreeMap<String, String>, addr: SocketAddr) -> anyhow::Result<()> {
+async fn listen(client: Client, selector: ListParams, addr: SocketAddr, pod_port: u16) -> anyhow::Result<()> {
     TcpListenerStream::new(TcpListener::bind(addr).await.unwrap())
         .take_until(tokio::signal::ctrl_c())
         .try_for_each(|client_conn| async {
@@ -52,16 +51,31 @@ async fn listen(client: Client, selector: &BTreeMap<String, String>, addr: Socke
                 info!(%peer_addr, "new connection");
             }
 
-            let pApi: Api<Pod> = Api::default_namespaced(client.clone());
+            let pod_api: Api<Pod> = Api::default_namespaced(client.clone());
 
-            let lp = selector_into_list_params(&selector);
-            let podList = pApi.list(&lp).await?;
-
-            podList.iter()
-                .filter(|p| p.status.and_then(|s| s.conditions).and_then(|cc| cc.iter().any(|c| c.status == "Ready" && c)))
+            let matching_pods = pod_api.list(&selector).await.unwrap();
+            let pod = matching_pods
+                .items
+                .into_iter()
+                .filter(|p| {
+                    p.status.as_ref().map_or(false, |s| {
+                        s.conditions.as_ref().map_or(false, |cs| {
+                            cs.into_iter()
+                                .any(|c| c.type_ == "Ready" && c.status == "True")
+                        })
+                    })
+                })
+                .next().unwrap();
 
             tokio::spawn(async move {
-                if let Err(e) = forward_connection(&pApi, "example", 80, client_conn).await {
+                if let Err(e) = forward_connection(
+                    &pod_api,
+                    pod.metadata.name.unwrap().as_str(),
+                    pod_port,
+                    client_conn,
+                )
+                .await
+                {
                     error!(
                         error = e.as_ref() as &dyn std::error::Error,
                         "failed to forward connection"
@@ -71,6 +85,7 @@ async fn listen(client: Client, selector: &BTreeMap<String, String>, addr: Socke
             // keep the server running
             Ok(())
         }).await?;
+    info!("done");
     Ok(())
 }
 
@@ -78,7 +93,7 @@ fn selector_into_list_params(selectors: &BTreeMap<String, String>) -> ListParams
     let labels = selectors
         .iter()
         .fold(String::new(), |mut res, (key, value)| {
-            if (res.len() > 0) {
+            if res.len() > 0 {
                 res.push(',');
             }
             res.push_str(key);
