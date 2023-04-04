@@ -1,49 +1,137 @@
 use anyhow::Context;
+use thiserror::Error;
 // Example to listen on port 8080 locally, forwarding to port 80 in the example pod.
 // Similar to `kubectl port-forward pod/example 8080:80`.
 use futures::{StreamExt, TryStreamExt};
-use std::{collections::BTreeMap, net::SocketAddr};
+use std::{collections::BTreeMap, env, net::SocketAddr};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::TcpListener,
+    task::JoinHandle,
 };
 use tokio_stream::wrappers::TcpListenerStream;
 use tracing::*;
 
-use k8s_openapi::api::core::v1::Pod;
 use k8s_openapi::api::core::v1::Service;
+use k8s_openapi::{api::core::v1::Pod, apimachinery::pkg::util::intstr::IntOrString};
 use kube::{
     api::{Api, ListParams},
     //runtime::wait::{await_condition, conditions::is_pod_running},
     Client, //ResourceExt,
 };
 
+#[derive(Error, Debug)]
+pub enum MyError {
+    #[error("service is referencing `{0:#?}` in pod - but this does not exist on the pod")]
+    CouldNotFindPort(IntOrString),
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
+
+    let args: Vec<String> = env::args().skip(1).collect();
+    info!("args, {:#?}", args);
+
     let client = Client::try_default().await?;
+    let service_api: Api<Service> = Api::default_namespaced(client.clone());
 
-    //    let pods: Api<Pod> = Api::default_namespaced(client.clone());
-    let services: Api<Service> = Api::default_namespaced(client.clone());
+    let mut handles = Vec::<JoinHandle<anyhow::Result<()>>>::with_capacity(args.len());
 
-    let service = services.get("whoami").await?;
-    let selector = service.spec.and_then(|s| s.selector).unwrap();
+    let mut i = 0;
+    for arg in args {
+        let local_address = [127, 0, 0, 1];
+        let mut local_port = Option::<u16>::None;
+        let service_name;
+        let service_port_arg;
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
-    let pod_port = 80;
-    info!(local_addr = %addr, pod_port, "forwarding traffic to the pod");
-    info!(
-        "try opening http://{0} in a browser, or `curl http://{0}`",
-        addr
-    );
+        let bits: Vec<&str> = arg.split(':').collect();
+        if bits.len() == 4 {
+            // todo parse local address
+            local_port = bits[1].parse::<u16>()?.into();
+            service_name = bits[2];
+            service_port_arg = bits[3];
+        } else if bits.len() == 3 {
+            local_port = bits[0].parse::<u16>()?.into();
+            service_name = bits[1];
+            service_port_arg = bits[2];
+        } else if bits.len() == 2 {
+            service_name = bits[0];
+            service_port_arg = bits[1];
+        } else {
+            panic!("{} is incorrectly formatted", arg);
+        }
+
+        let service = service_api.get(service_name).await?;
+        let service_spec = service.spec.unwrap();
+        let selector = service_spec.selector.unwrap();
+
+        let mut pod_port: Option<IntOrString> = None;
+        if let Ok(pod_int) = service_port_arg.parse::<i32>() {
+            pod_port = IntOrString::Int(pod_int).into();
+        }
+
+        if pod_port == None {
+            pod_port = service_spec
+                .ports
+                .map(|pl| {
+                    pl.into_iter()
+                        .find(|p| p.name == Some(service_port_arg.to_string()))
+                })
+                .flatten()
+                .map(|p| p.target_port.unwrap_or(IntOrString::Int(p.port)))
+        }
+
+        if pod_port == None {
+            panic!("could not find port {} on service {}", service_port_arg, service_name)
+        }
+
+        if local_port == None {
+            if let IntOrString::Int(p) = pod_port.as_ref().unwrap() {
+                local_port = (*p).try_into().ok()
+            }
+        }
+
+        if local_port == None {
+            panic!("local port not provided, or service port is not a number for {}", arg)
+        }
+
+        let ppstr = pod_port.as_ref().map(|p| match p {
+            IntOrString::Int(i) => i.to_string(),
+            IntOrString::String(s) => s.to_string(),
+        });
+
+        let addr = SocketAddr::from((local_address, local_port.unwrap()));
+        info!(local_addr = %addr, pod_port = ppstr, "forwarding traffic to the pod");
+        info!(
+            "try opening http://{0} in a browser, or `curl http://{0}`",
+            addr
+        );
+
+        handles.insert(
+            i,
+            tokio::spawn(listen(
+                client.clone(),
+                selector_into_list_params(&selector),
+                addr,
+                pod_port.unwrap().clone(),
+            )),
+        );
+        i = i + 1;
+    }
     info!("use Ctrl-C to stop the server and delete the pod");
 
-    let srv = tokio::spawn(listen(client, selector_into_list_params(&selector), addr, pod_port));
+    futures::future::join_all(handles).await;
 
-    srv.await?
+    Ok(())
 }
 
-async fn listen(client: Client, selector: ListParams, addr: SocketAddr, pod_port: u16) -> anyhow::Result<()> {
+async fn listen(
+    client: Client,
+    selector: ListParams,
+    addr: SocketAddr,
+    pod_port: IntOrString,
+) -> anyhow::Result<()> {
     TcpListenerStream::new(TcpListener::bind(addr).await.unwrap())
         .take_until(tokio::signal::ctrl_c())
         .try_for_each(|client_conn| async {
@@ -65,26 +153,51 @@ async fn listen(client: Client, selector: ListParams, addr: SocketAddr, pod_port
                         })
                     })
                 })
-                .next().unwrap();
+                .next()
+                .unwrap();
 
-            tokio::spawn(async move {
-                if let Err(e) = forward_connection(
-                    &pod_api,
-                    pod.metadata.name.unwrap().as_str(),
-                    pod_port,
-                    client_conn,
-                )
-                .await
-                {
-                    error!(
-                        error = e.as_ref() as &dyn std::error::Error,
-                        "failed to forward connection"
-                    );
-                }
-            });
+            let port_int: Option<u16> = match pod_port.clone() {
+                IntOrString::Int(i) => u16::try_from(i).ok(),
+                IntOrString::String(n) => pod
+                    .spec
+                    .map(|pd| {
+                        pd.containers
+                            .into_iter()
+                            .map(|c| c.ports)
+                            .flatten()
+                            .flat_map(|p| p)
+                            .find(|p| p.name == Some(n.clone()))
+                    })
+                    .flatten()
+                    .map(|p| u16::try_from(p.container_port).ok())
+                    .flatten(),
+            };
+
+            if let Some(port) = port_int {
+                tokio::spawn(async move {
+                    if let Err(e) = forward_connection(
+                        &pod_api,
+                        pod.metadata.name.unwrap().as_str(),
+                        port,
+                        client_conn,
+                    )
+                    .await
+                    {
+                        error!(
+                            error = e.as_ref() as &dyn std::error::Error,
+                            "failed to forward connection"
+                        );
+                    }
+                });
+            } else {
+                let e: &dyn std::error::Error = &MyError::CouldNotFindPort(pod_port.clone());
+                error!(error = e, "failed to forward connection");
+            }
+
             // keep the server running
             Ok(())
-        }).await?;
+        })
+        .await?;
     info!("done");
     Ok(())
 }
