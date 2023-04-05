@@ -1,6 +1,6 @@
 use anyhow::Context;
 use futures::{StreamExt, TryStreamExt};
-use std::{collections::BTreeMap, env, net::SocketAddr};
+use std::{collections::BTreeMap, net::SocketAddr};
 use thiserror::Error;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -10,135 +10,169 @@ use tokio::{
 use tokio_stream::wrappers::TcpListenerStream;
 use tracing::*;
 
+use clap::{arg, Command};
 use k8s_openapi::api::core::v1::Service;
 use k8s_openapi::{api::core::v1::Pod, apimachinery::pkg::util::intstr::IntOrString};
 use kube::{
     api::{Api, ListParams},
-    Client,
+    Client, Config,
 };
-use clap::{arg, Command};
 
 fn cli() -> Command {
     Command::new("kubempf")
         .about("Multi-service port proxying tool for Kubernetes")
         .arg_required_else_help(true)
         .allow_external_subcommands(false)
-        .arg(arg!(-c --context [CONTEXT]).required(false).require_equals(false).help("Kubernetes Context"))
-        .arg(arg!(-n --namespace [NAMESPACE]).required(false).require_equals(false).help("Kubernetes Namespace"))
-        .arg(arg!([FORWARD]).num_args(1..).required(true).help("[[LOCAL_ADDRESS:]LOCAL_PORT:]service:port"))
+        .arg(
+            arg!(-c - -context[CONTEXT])
+                .required(false)
+                .require_equals(false)
+                .help("Kubernetes Context"),
+        )
+        .arg(
+            arg!(-n - -namespace[NAMESPACE])
+                .required(false)
+                .require_equals(false)
+                .help("Kubernetes Namespace"),
+        )
+        .arg(
+            arg!([FORWARD])
+                .id("forwards")
+                .num_args(1..)
+                .required(true)
+                .help("[[LOCAL_ADDRESS:]LOCAL_PORT:]service:port"),
+        )
 }
 
 #[derive(Error, Debug)]
 pub enum MyError {
+    #[error("unable to parse argument {0}")]
+    ArgumentParseError(String),
+    #[error("unable to find named port {0} on service {1}")]
+    MissingNamedPort(String, String),
+    #[error("unable to infer local port from named service port {0} for service {1}")]
+    UnableToInferLocalPort(String, String),
+    #[error("unable to convert service port {0} to u16 for service {1}")]
+    UnableToConvertServicePort(String, String),
+    #[error("service {0} not found or invalid")]
+    ServiceNotFound(String),
+    #[error("service {0} not compatiable as it is is missing selectors")]
+    ServiceMissingSelectors(String),
     #[error("service is referencing `{0:#?}` in pod - but this does not exist on the pod")]
     CouldNotFindPort(IntOrString),
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let _matches = cli().get_matches();
+#[derive(Debug)]
+struct Forward {
+    service_name: String,
+    service_port: String,
+    pod_list_params: ListParams,
+    pod_port: IntOrString,
+    local_address: SocketAddr,
+}
 
-
-    return Ok(());
-    tracing_subscriber::fmt::init();
-
-    let args: Vec<String> = env::args().skip(1).collect();
-    info!("args, {:#?}", args);
-
-    let client = Client::try_default().await?;
-    let service_api: Api<Service> = Api::default_namespaced(client.clone());
-
-    let mut handles = Vec::<JoinHandle<anyhow::Result<()>>>::with_capacity(args.len());
-
-    let mut i = 0;
-    for arg in args {
+impl Forward {
+    pub async fn parse(api: &Api<Service>, arg: &str) -> anyhow::Result<Forward> {
         let local_address = [127, 0, 0, 1];
-        let mut local_port = Option::<u16>::None;
+        let local_port_arg;
         let service_name;
         let service_port_arg;
 
-        let bits: Vec<&str> = arg.split(':').collect();
+        let bits: Vec<&str> = (*arg).split(':').collect();
         if bits.len() == 4 {
             // todo parse local address
-            local_port = bits[1].parse::<u16>()?.into();
+            local_port_arg = bits[1].parse::<u16>()?.into();
             service_name = bits[2];
             service_port_arg = bits[3];
         } else if bits.len() == 3 {
-            local_port = bits[0].parse::<u16>()?.into();
+            local_port_arg = bits[0].parse::<u16>()?.into();
             service_name = bits[1];
             service_port_arg = bits[2];
         } else if bits.len() == 2 {
+            local_port_arg = Option::<u16>::None;
             service_name = bits[0];
             service_port_arg = bits[1];
         } else {
-            panic!("{} is incorrectly formatted", arg);
+            return Err(MyError::ArgumentParseError(arg.to_string()).into());
         }
 
-        let service = service_api.get(service_name).await?;
-        let service_spec = service.spec.unwrap();
-        let selector = service_spec.selector.unwrap();
+        let service = api.get(service_name).await?;
+        let service_spec = service.spec.ok_or(MyError::ServiceNotFound(service_name.to_string()))?;
+        let selector = service_spec.selector.ok_or(MyError::ServiceMissingSelectors(service_name.to_string()))?;
 
-        let mut pod_port: Option<IntOrString> = None;
-        if let Ok(pod_int) = service_port_arg.parse::<i32>() {
-            pod_port = IntOrString::Int(pod_int).into();
-        }
-
-        if pod_port == None {
-            pod_port = service_spec
+        let pod_port: IntOrString = match service_port_arg.parse::<i32>() {
+            Ok(p) => Ok(IntOrString::Int(p)),
+            Err(_) => service_spec
                 .ports
-                .map(|pl| {
-                    pl.into_iter()
-                        .find(|p| p.name == Some(service_port_arg.to_string()))
-                })
-                .flatten()
+                .and_then(|pl| pl.into_iter().find(|p| p.name == Some(service_port_arg.to_string())))
                 .map(|p| p.target_port.unwrap_or(IntOrString::Int(p.port)))
-        }
+                .ok_or(MyError::MissingNamedPort(service_port_arg.to_string(), service_name.to_string()))
+        }?;
 
-        if pod_port == None {
-            panic!(
-                "could not find port {} on service {}",
-                service_port_arg, service_name
-            )
-        }
-
-        if local_port == None {
-            if let IntOrString::Int(p) = pod_port.as_ref().unwrap() {
-                local_port = (*p).try_into().ok()
+        let local_port = match local_port_arg {
+            Some(p) => Ok(p),
+            None => match pod_port {
+                IntOrString::Int(p) => (p).try_into().map_err(|_| MyError::UnableToConvertServicePort(p.to_string(), service_name.to_string())),
+                IntOrString::String(_) => Err(MyError::UnableToInferLocalPort(service_port_arg.to_string(), service_name.to_string()).into())
             }
-        }
+        }?;
 
-        if local_port == None {
-            panic!(
-                "local port not provided, or service port is not a number for {}",
-                arg
-            )
-        }
+        Ok(Self {
+            service_name: service_name.to_string(),
+            service_port: service_port_arg.to_string(),
+            pod_list_params: selector_into_list_params(&selector),
+            pod_port: pod_port,
+            local_address: SocketAddr::from((local_address, local_port)),
+        })
+    }
+}
 
-        let ppstr = pod_port.as_ref().map(|p| match p {
-            IntOrString::Int(i) => i.to_string(),
-            IntOrString::String(s) => s.to_string(),
-        });
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let matches = cli().get_matches();
 
-        let addr = SocketAddr::from((local_address, local_port.unwrap()));
-        info!(local_addr = %addr, pod_port = ppstr, "forwarding traffic to the pod");
-        info!(
-            "try opening http://{0} in a browser, or `curl http://{0}`",
-            addr
-        );
+    let context = matches.get_one::<String>("context");
+    let namespace = matches.get_one::<String>("namespace");
+    // this unwrap should not error as cli().get_matches() should return help if no forwards are provided
+    let forwards = matches.get_many::<String>("forwards").unwrap();
+
+    tracing_subscriber::fmt::init();
+
+    let kube_opts = kube::config::KubeConfigOptions {
+        context: context.map(|s| (*s).clone()),
+        cluster: None,
+        user: None,
+    };
+    let mut config = Config::from_kubeconfig(&kube_opts).await?;
+    if let Some(ns) = namespace {
+        config.default_namespace = (*ns).clone();
+    }
+
+    let client = Client::try_from(config)?;
+
+    let service_api: Api<Service> = Api::default_namespaced(client.clone());
+
+    let mut handles = Vec::<JoinHandle<anyhow::Result<()>>>::with_capacity(forwards.len());
+
+    let mut i = 0;
+    for arg in forwards {
+        let forward = Forward::parse(&service_api, arg).await?;
+
+        info!("Forwarding {} to {}:{}", forward.local_address, forward.service_name, forward.service_port);
 
         handles.insert(
             i,
             tokio::spawn(listen(
                 client.clone(),
-                selector_into_list_params(&selector),
-                addr,
-                pod_port.unwrap().clone(),
+                forward.pod_list_params,
+                forward.local_address,
+                forward.pod_port,
             )),
         );
         i = i + 1;
     }
-    info!("use Ctrl-C to stop the server and delete the pod");
 
+    info!("Ctrl-C to stop the server");
     futures::future::join_all(handles).await;
 
     Ok(())
@@ -150,7 +184,8 @@ async fn listen(
     addr: SocketAddr,
     pod_port: IntOrString,
 ) -> anyhow::Result<()> {
-    TcpListenerStream::new(TcpListener::bind(addr).await.unwrap())
+    let listener = TcpListener::bind(addr).await?;
+    TcpListenerStream::new(listener)
         .take_until(tokio::signal::ctrl_c())
         .try_for_each(|client_conn| async {
             if let Ok(peer_addr) = client_conn.peer_addr() {
