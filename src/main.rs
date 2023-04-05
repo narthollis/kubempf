@@ -1,9 +1,7 @@
 use anyhow::Context;
-use thiserror::Error;
-// Example to listen on port 8080 locally, forwarding to port 80 in the example pod.
-// Similar to `kubectl port-forward pod/example 8080:80`.
 use futures::{StreamExt, TryStreamExt};
 use std::{collections::BTreeMap, env, net::SocketAddr};
+use thiserror::Error;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::TcpListener,
@@ -16,9 +14,19 @@ use k8s_openapi::api::core::v1::Service;
 use k8s_openapi::{api::core::v1::Pod, apimachinery::pkg::util::intstr::IntOrString};
 use kube::{
     api::{Api, ListParams},
-    //runtime::wait::{await_condition, conditions::is_pod_running},
-    Client, //ResourceExt,
+    Client,
 };
+use clap::{arg, Command};
+
+fn cli() -> Command {
+    Command::new("kubempf")
+        .about("Multi-service port proxying tool for Kubernetes")
+        .arg_required_else_help(true)
+        .allow_external_subcommands(false)
+        .arg(arg!(-c --context [CONTEXT]).required(false).require_equals(false).help("Kubernetes Context"))
+        .arg(arg!(-n --namespace [NAMESPACE]).required(false).require_equals(false).help("Kubernetes Namespace"))
+        .arg(arg!([FORWARD]).num_args(1..).required(true).help("[[LOCAL_ADDRESS:]LOCAL_PORT:]service:port"))
+}
 
 #[derive(Error, Debug)]
 pub enum MyError {
@@ -28,6 +36,10 @@ pub enum MyError {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let _matches = cli().get_matches();
+
+
+    return Ok(());
     tracing_subscriber::fmt::init();
 
     let args: Vec<String> = env::args().skip(1).collect();
@@ -83,7 +95,10 @@ async fn main() -> anyhow::Result<()> {
         }
 
         if pod_port == None {
-            panic!("could not find port {} on service {}", service_port_arg, service_name)
+            panic!(
+                "could not find port {} on service {}",
+                service_port_arg, service_name
+            )
         }
 
         if local_port == None {
@@ -93,7 +108,10 @@ async fn main() -> anyhow::Result<()> {
         }
 
         if local_port == None {
-            panic!("local port not provided, or service port is not a number for {}", arg)
+            panic!(
+                "local port not provided, or service port is not a number for {}",
+                arg
+            )
         }
 
         let ppstr = pod_port.as_ref().map(|p| match p {
