@@ -1,7 +1,5 @@
 use clap::{arg, Command};
-use kube::{api::ListParams, Api};
-use k8s_openapi::{apimachinery::pkg::util::intstr::IntOrString, api::core::v1::Service};
-use std::{net::SocketAddr, collections::BTreeMap};
+use std::net::{SocketAddr, IpAddr, Ipv6Addr, Ipv4Addr};
 
 use crate::errors::MyError;
 
@@ -33,97 +31,109 @@ pub fn cli() -> Command {
 
 
 #[derive(Debug)]
-pub struct Forward {
-    pub service_name: String,
-    pub service_port: String,
-    pub pod_list_params: ListParams,
-    pub pod_port: IntOrString,
+pub struct Forward<'a> {
+    pub service_name: &'a str,
+    pub service_port: &'a str,
     pub local_address: SocketAddr,
 }
 
-impl Forward {
-    pub async fn parse(api: &Api<Service>, arg: &str) -> anyhow::Result<Forward> {
-        let local_address = [127, 0, 0, 1];
+impl<'a> Forward<'a> {
+    pub fn parse(arg: &'a str) -> anyhow::Result<Forward<'a>> {
+        let local_address;
         let local_port_arg;
         let service_name;
-        let service_port_arg;
+        let service_port;
 
-        let bits: Vec<&str> = (*arg).split(':').collect();
+        let bits: Vec<&str> = (*arg).rsplitn(4, ':').collect();
         if bits.len() == 4 {
-            // todo parse local address
-            local_port_arg = bits[1].parse::<u16>()?.into();
-            service_name = bits[2];
-            service_port_arg = bits[3];
-        } else if bits.len() == 3 {
-            local_port_arg = bits[0].parse::<u16>()?.into();
+            if bits[3].starts_with('[') && bits[3].ends_with(']') {
+                local_address = IpAddr::V6(bits[3][1..(bits[3].len()-1)].parse::<Ipv6Addr>()?);
+            } else {
+                local_address = IpAddr::V4(bits[3].parse::<Ipv4Addr>()?);
+            }
+            local_port_arg = bits[2].parse::<u16>()?.into();
             service_name = bits[1];
-            service_port_arg = bits[2];
+            service_port = bits[0];
+        } else if bits.len() == 3 {
+            local_address = IpAddr::from([127, 0, 0, 1]);
+            local_port_arg = bits[2].parse::<u16>()?.into();
+            service_name = bits[1];
+            service_port = bits[0];
         } else if bits.len() == 2 {
+            local_address = IpAddr::from([127, 0, 0, 1]);
             local_port_arg = Option::<u16>::None;
-            service_name = bits[0];
-            service_port_arg = bits[1];
+            service_name = bits[1];
+            service_port = bits[0];
         } else {
             return Err(MyError::ArgumentParseError(arg.to_string()).into());
         }
 
-        let service = api.get(service_name).await?;
-        let service_spec = service
-            .spec
-            .ok_or(MyError::ServiceNotFound(service_name.to_string()))?;
-        let selector = service_spec
-            .selector
-            .ok_or(MyError::ServiceMissingSelectors(service_name.to_string()))?;
-
-        let pod_port: IntOrString = match service_port_arg.parse::<i32>() {
-            Ok(p) => Ok(IntOrString::Int(p)),
-            Err(_) => service_spec
-                .ports
-                .and_then(|pl| {
-                    pl.into_iter()
-                        .find(|p| p.name == Some(service_port_arg.to_string()))
-                })
-                .map(|p| p.target_port.unwrap_or(IntOrString::Int(p.port)))
-                .ok_or(MyError::MissingNamedPort(
-                    service_port_arg.to_string(),
-                    service_name.to_string(),
-                )),
-        }?;
-
         let local_port = match local_port_arg {
             Some(p) => Ok(p),
-            None => match pod_port {
-                IntOrString::Int(p) => (p).try_into().map_err(|_| {
-                    MyError::UnableToConvertServicePort(p.to_string(), service_name.to_string())
-                }),
-                IntOrString::String(_) => Err(MyError::UnableToInferLocalPort(
-                    service_port_arg.to_string(),
-                    service_name.to_string(),
-                )),
-            },
+            None => service_port.parse(),
         }?;
 
         Ok(Self {
-            service_name: service_name.to_string(),
-            service_port: service_port_arg.to_string(),
-            pod_list_params: selector_into_list_params(&selector),
-            pod_port,
+            service_name,
+            service_port,
             local_address: SocketAddr::from((local_address, local_port)),
         })
     }
 }
 
-fn selector_into_list_params(selectors: &BTreeMap<String, String>) -> ListParams {
-    let labels = selectors
-        .iter()
-        .fold(String::new(), |mut res, (key, value)| {
-            if !res.is_empty() {
-                res.push(',');
-            }
-            res.push_str(key);
-            res.push('=');
-            res.push_str(value);
-            res
-        });
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    ListParams::default().labels(&labels)
+    #[test]
+    fn service_name_and_numeric_port() {
+        let fwd = Forward::parse("test:1234").unwrap();
+
+        assert_eq!(fwd.service_name, "test");
+        assert_eq!(fwd.service_port, "1234");
+        assert_eq!(fwd.local_address, SocketAddr::from(([127, 0, 0, 1], 1234)));
+    }
+
+    #[test]
+    fn service_name_and_str_port() {
+        let fwd = Forward::parse("test:http");
+
+        assert!(fwd.is_err());
+    }
+
+    #[test]
+    fn local_port_service_name_and_numeric_port() {
+        let fwd = Forward::parse("8080:test:1234").unwrap();
+
+        assert_eq!(fwd.service_name, "test");
+        assert_eq!(fwd.service_port, "1234");
+        assert_eq!(fwd.local_address, SocketAddr::from(([127, 0, 0, 1], 8080)));
+    }
+
+    #[test]
+    fn local_port_service_name_and_str_port() {
+        let fwd = Forward::parse("8080:test:http").unwrap();
+
+        assert_eq!(fwd.service_name, "test");
+        assert_eq!(fwd.service_port, "http");
+        assert_eq!(fwd.local_address, SocketAddr::from(([127, 0, 0, 1], 8080)));
+    }
+
+    #[test]
+    fn ipv4_local_port_service_name_and_numeric_port() {
+        let fwd = Forward::parse("241.2.124.2:8080:test:1234").unwrap();
+
+        assert_eq!(fwd.service_name, "test");
+        assert_eq!(fwd.service_port, "1234");
+        assert_eq!(fwd.local_address, SocketAddr::from(([241, 2, 124, 2], 8080)));
+    }
+
+    #[test]
+    fn ipv6_local_port_service_name_and_numeric_port() {
+        let fwd = Forward::parse("[::1]:8080:test:1234").unwrap();
+
+        assert_eq!(fwd.service_name, "test");
+        assert_eq!(fwd.service_port, "1234");
+        assert_eq!(fwd.local_address, SocketAddr::from((IpAddr::from([0,0,0,0,0,0,0,1]), 8080)));
+    }
 }
