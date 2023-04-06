@@ -7,10 +7,6 @@ pub enum MyError {
     ArgumentParseError(String),
     #[error("unable to find named port {0} on service {1}")]
     MissingNamedPort(String, String),
-    #[error("unable to infer local port from named service port {0} for service {1}")]
-    UnableToInferLocalPort(String, String),
-    #[error("unable to convert service port {0} to u16 for service {1}")]
-    UnableToConvertServicePort(String, String),
     #[error("service {0} not found or invalid")]
     ServiceNotFound(String),
     #[error("service {0} not compatiable as it is is missing selectors")]

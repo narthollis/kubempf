@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use anyhow::Context;
 use futures::{StreamExt, TryStreamExt};
 use tokio::{
@@ -15,10 +17,10 @@ use kube::{
     Client, Config,
 };
 
-pub(crate) mod errors;
 pub(crate) mod cli;
-use crate::errors::MyError;
+pub(crate) mod errors;
 use crate::cli::{cli, Forward};
+use crate::{errors::MyError};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -48,7 +50,32 @@ async fn main() -> anyhow::Result<()> {
     let mut handles = Vec::<JoinHandle<anyhow::Result<()>>>::with_capacity(forwards.len());
 
     for (i, arg) in forwards.enumerate() {
-        let forward = Forward::parse(&service_api, arg).await?;
+        let forward = Forward::parse(arg)?;
+
+        let service = service_api.get(forward.service_name).await?;
+        let service_spec = service
+            .spec
+            .ok_or_else(|| MyError::ServiceNotFound(forward.service_name.to_string()))?;
+        let selector = service_spec
+            .selector
+            .ok_or_else(|| MyError::ServiceMissingSelectors(
+                forward.service_name.to_string(),
+            ))?;
+
+        let pod_port: IntOrString = match forward.service_port.parse::<i32>() {
+            Ok(p) => Ok(IntOrString::Int(p)),
+            Err(_) => service_spec
+                .ports
+                .and_then(|pl| {
+                    pl.into_iter()
+                        .find(|p| p.name == Some(forward.service_port.to_string()))
+                })
+                .map(|p| p.target_port.unwrap_or(IntOrString::Int(p.port)))
+                .ok_or_else(|| MyError::MissingNamedPort(
+                    forward.service_port.to_string(),
+                    forward.service_name.to_string(),
+                )),
+        }?;
 
         info!(
             "Forwarding {} to {}:{}",
@@ -62,8 +89,8 @@ async fn main() -> anyhow::Result<()> {
             tokio::spawn(serve(
                 socket,
                 client.clone(),
-                forward.pod_list_params,
-                forward.pod_port,
+                selector_into_list_params(&selector),
+                pod_port,
             )),
         );
     }
@@ -79,7 +106,7 @@ async fn serve(
     client: Client,
     selector: ListParams,
     pod_port: IntOrString,
-    ) -> anyhow::Result<()> {
+) -> anyhow::Result<()> {
     TcpListenerStream::new(socket)
         .take_until(tokio::signal::ctrl_c())
         .try_for_each(|client_conn| async {
@@ -130,7 +157,7 @@ async fn find_pod(api: &Api<Pod>, selector: &ListParams) -> anyhow::Result<Pod> 
                 })
             })
         })
-        .ok_or(MyError::MatchingReadyPodNotFound().into())
+        .ok_or_else(|| MyError::MatchingReadyPodNotFound().into())
 }
 
 fn port_to_int(pod_port: &IntOrString, pod: &Pod) -> anyhow::Result<u16> {
@@ -144,12 +171,28 @@ fn port_to_int(pod_port: &IntOrString, pod: &Pod) -> anyhow::Result<u16> {
             .and_then(|s| {
                 s.containers
                     .into_iter()
-                    .flat_map(|c| c.ports.unwrap_or(vec![]))
+                    .flat_map(|c| c.ports.unwrap_or_default())
                     .find(|p| p.name == Some(n.clone()))
             })
             .and_then(|p| u16::try_from(p.container_port).ok())
-            .ok_or(MyError::CouldNotFindPort(pod_port.clone()).into()),
+            .ok_or_else(|| MyError::CouldNotFindPort(pod_port.clone()).into()),
     }
+}
+
+fn selector_into_list_params(selectors: &BTreeMap<String, String>) -> ListParams {
+    let labels = selectors
+        .iter()
+        .fold(String::new(), |mut res, (key, value)| {
+            if !res.is_empty() {
+                res.push(',');
+            }
+            res.push_str(key);
+            res.push('=');
+            res.push_str(value);
+            res
+        });
+
+    ListParams::default().labels(&labels)
 }
 
 async fn forward_connection(
