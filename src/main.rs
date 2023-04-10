@@ -20,7 +20,7 @@ use kube::{
 pub(crate) mod cli;
 pub(crate) mod errors;
 use crate::cli::{cli, Forward};
-use crate::{errors::MyError};
+use crate::errors::MyError;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
