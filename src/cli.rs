@@ -18,20 +18,20 @@ pub fn cli() -> Command {
             arg!(-n - -namespace[NAMESPACE])
                 .required(false)
                 .require_equals(false)
-                .help("Kubernetes Namespace"),
+                .help("Default Kubernetes Namespace to match services in"),
         )
         .arg(
             arg!(--compact)
                 .required(false)
                 .action(clap::ArgAction::SetTrue)
-                .help("Output compact messages"),
+                .help("Enable compact console output"),
         )
         .arg(
             arg!([FORWARD])
                 .id("forwards")
                 .num_args(1..)
                 .required(true)
-                .help("[[LOCAL_ADDRESS:]LOCAL_PORT:]service:port"),
+                .help("[[LOCAL_ADDRESS:]LOCAL_PORT:][namespace/]service:port"),
         )
 }
 
