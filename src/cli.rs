@@ -1,5 +1,5 @@
 use clap::{arg, Command};
-use std::net::{SocketAddr, IpAddr, Ipv6Addr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use crate::errors::MyError;
 
@@ -21,6 +21,12 @@ pub fn cli() -> Command {
                 .help("Kubernetes Namespace"),
         )
         .arg(
+            arg!(--compact)
+                .required(false)
+                .action(clap::ArgAction::SetTrue)
+                .help("Output compact messages"),
+        )
+        .arg(
             arg!([FORWARD])
                 .id("forwards")
                 .num_args(1..)
@@ -29,11 +35,11 @@ pub fn cli() -> Command {
         )
 }
 
-
 #[derive(Debug)]
 pub struct Forward<'a> {
     pub service_name: &'a str,
     pub service_port: &'a str,
+    pub namespace: Option<&'a str>,
     pub local_address: SocketAddr,
 }
 
@@ -41,13 +47,13 @@ impl<'a> Forward<'a> {
     pub fn parse(arg: &'a str) -> anyhow::Result<Forward<'a>> {
         let local_address;
         let local_port_arg;
-        let service_name;
+        let mut service_name;
         let service_port;
 
         let bits: Vec<&str> = (*arg).rsplitn(4, ':').collect();
         if bits.len() == 4 {
             if bits[3].starts_with('[') && bits[3].ends_with(']') {
-                local_address = IpAddr::V6(bits[3][1..(bits[3].len()-1)].parse::<Ipv6Addr>()?);
+                local_address = IpAddr::V6(bits[3][1..(bits[3].len() - 1)].parse::<Ipv6Addr>()?);
             } else {
                 local_address = IpAddr::V4(bits[3].parse::<Ipv4Addr>()?);
             }
@@ -73,9 +79,17 @@ impl<'a> Forward<'a> {
             None => service_port.parse(),
         }?;
 
+        let mut namespace = None;
+        if service_name.contains('/') {
+            let sbits: Vec<&str> = service_name.splitn(2, '/').collect();
+            namespace = Some(sbits[0]);
+            service_name = sbits[1];
+        }
+
         Ok(Self {
             service_name,
             service_port,
+            namespace,
             local_address: SocketAddr::from((local_address, local_port)),
         })
     }
@@ -89,6 +103,7 @@ mod tests {
     fn service_name_and_numeric_port() {
         let fwd = Forward::parse("test:1234").unwrap();
 
+        assert_eq!(fwd.namespace, None);
         assert_eq!(fwd.service_name, "test");
         assert_eq!(fwd.service_port, "1234");
         assert_eq!(fwd.local_address, SocketAddr::from(([127, 0, 0, 1], 1234)));
@@ -125,7 +140,10 @@ mod tests {
 
         assert_eq!(fwd.service_name, "test");
         assert_eq!(fwd.service_port, "1234");
-        assert_eq!(fwd.local_address, SocketAddr::from(([241, 2, 124, 2], 8080)));
+        assert_eq!(
+            fwd.local_address,
+            SocketAddr::from(([241, 2, 124, 2], 8080))
+        );
     }
 
     #[test]
@@ -134,6 +152,19 @@ mod tests {
 
         assert_eq!(fwd.service_name, "test");
         assert_eq!(fwd.service_port, "1234");
-        assert_eq!(fwd.local_address, SocketAddr::from((IpAddr::from([0,0,0,0,0,0,0,1]), 8080)));
+        assert_eq!(
+            fwd.local_address,
+            SocketAddr::from((IpAddr::from([0, 0, 0, 0, 0, 0, 0, 1]), 8080))
+        );
+    }
+
+    #[test]
+    fn namespace_service_name_and_numeric_port() {
+        let fwd = Forward::parse("namespace/test:1234").unwrap();
+
+        assert_eq!(fwd.namespace, Some("namespace"));
+        assert_eq!(fwd.service_name, "test");
+        assert_eq!(fwd.service_port, "1234");
+        assert_eq!(fwd.local_address, SocketAddr::from(([127, 0, 0, 1], 1234)));
     }
 }
