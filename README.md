@@ -1,4 +1,5 @@
 # kubempf
+
 Tool to forward and maintain multiple port forwards to kubernetes pods
 
 ## Usage
@@ -12,6 +13,7 @@ Arguments:
 Options:
   -c, --context [<CONTEXT>]      Kubernetes Context
   -n, --namespace [<NAMESPACE>]  Kubernetes Namespace
+      --compact                  Compact console output
   -h, --help                     Print help
 ```
 
@@ -37,7 +39,8 @@ selector.
 
 ### Arguments
 
-| Short | Long        | Description                                                    |
-| ----- | ----------- | -------------------------------------------------------------- |
-| -c    | --context   | Name of the context from the kube config to use                |
-| -n    | --namespace | Kuberentes namespace to find the services in                   |
+| Short | Long        | Description                                     |
+| ----- | ----------- | ----------------------------------------------- |
+| -c    | --context   | Name of the context from the kube config to use |
+| -n    | --namespace | Kuberentes namespace to find the services in    |
+|       |             | Compact console output                          |
