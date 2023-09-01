@@ -6,5 +6,12 @@
   "lockFileMaintenance": {
     "enabled": true,
     "automerge": true
-  }
+  },
+  "packageRules": [
+    {
+      "matchPackagePatterns": ["kube", "k8s-openapi"],
+      "matchManagers": ["cargo"],
+      "groupName": "rust kube"
+    }
+  ]
 }
