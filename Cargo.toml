@@ -21,7 +21,7 @@ tokio-stream = { version = "0.1.14", features = ["net"] }
 tracing = "0.1.40"
 tracing-subscriber = "0.3.18"
 serde_json = "1.0.108"
-clap = "4.4.10"
+clap = "4.4.13"
 
 [package.metadata.cross.build]
 xargo = false
