@@ -178,20 +178,9 @@ async fn serve(
     Ok(())
 }
 
-const EMPTY_POD_LIST: kube::core::ObjectList<Pod> = kube::core::ObjectList::<Pod> {
-    metadata: kube::core::ListMeta {
-        continue_: None,
-        remaining_item_count: None,
-        resource_version: None,
-        self_link: None,
-    },
-    items: vec![],
-};
-
 async fn find_pod(api: &Api<Pod>, selector: &ListParams) -> anyhow::Result<Pod> {
     api.list(selector)
-        .await
-        .unwrap_or(EMPTY_POD_LIST)
+        .await?
         .items
         .into_iter()
         .find(|p| {
