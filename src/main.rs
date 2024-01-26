@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use anyhow::Context;
-use futures::{StreamExt, TryStreamExt};
+use futures::{stream::AbortHandle, StreamExt, TryStreamExt};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::TcpListener,
@@ -17,10 +17,14 @@ use kube::{
     Client, Config,
 };
 
+pub(crate) mod cancelable_stream;
 pub(crate) mod cli;
 pub(crate) mod errors;
-use crate::cli::{cli, Forward};
 use crate::errors::MyError;
+use crate::{
+    cancelable_stream::CancelableReadWrite,
+    cli::{cli, Forward},
+};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -245,8 +249,13 @@ async fn forward_connection(
     let mut upstream_conn = forwarder
         .take_stream(port)
         .context("port not found in forwarder")?;
-    tokio::io::copy_bidirectional(&mut client_conn, &mut upstream_conn).await?;
-    drop(upstream_conn);
+
+    let (_abort_handle, abort_registration) = AbortHandle::new_pair();
+    let mut u = CancelableReadWrite::new(&mut upstream_conn, &abort_registration);
+    let mut c = CancelableReadWrite::new(&mut client_conn, &abort_registration);
+
+    tokio::io::copy_bidirectional(&mut c, &mut u).await?;
+
     forwarder.join().await?;
     trace!("connection closed");
     Ok(())
