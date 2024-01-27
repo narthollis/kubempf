@@ -1,5 +1,5 @@
-use thiserror::Error;
 use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
+use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum MyError {
