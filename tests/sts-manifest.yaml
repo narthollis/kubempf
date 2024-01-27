@@ -1,0 +1,109 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: mpftest
+  labels:
+    app: mpftest
+spec:
+  ports:
+    - port: 80
+      name: http
+  selector:
+    app: mpftest
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mpftest
+spec:
+  selector:
+    matchLabels:
+      app: mpftest
+  serviceName: mpftest
+  replicas: 3
+  minReadySeconds: 10
+  template:
+    metadata:
+      labels:
+        app: mpftest
+    spec:
+      initContainers:
+        - name: createchecks
+          image: registry.k8s.io/nginx-slim:0.8
+          command:
+            - /bin/sh
+            - -c
+            - |
+                echo 'OK' > /usr/share/nginx/html/_live &&
+                echo 'OK' > /usr/share/nginx/html/_ready &&
+                cat > /usr/share/nginx/html/index.html <<EOT
+                <html>
+                  <head><title>This is a test thingy</title></head>
+                  <body>
+                    <dl>
+                      <dt>MY_NODE_NAME</dt><dd>$MY_NODE_NAME</dd>
+                      <dt>MY_POD_NAME</dt><dd>$MY_POD_NAME</dd>
+                      <dt>MY_POD_NAMESPACE</dt><dd>$MY_POD_NAMESPACE</dd>
+                      <dt>MY_POD_IP</dt><dd>$MY_POD_IP</dd>
+                      <dt>MY_POD_SERVICE_ACCOUNT</dt><dd>$MY_POD_SERVICE_ACCOUNT</dd>
+                    </dl>
+                  </body>
+                </html>
+                EOT
+          env:
+            - name: MY_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: MY_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: MY_POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: MY_POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: MY_POD_SERVICE_ACCOUNT
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.serviceAccountName
+          volumeMounts:
+            - name: www
+              mountPath: /usr/share/nginx/html
+      containers:
+        - name: nginx
+          image: registry.k8s.io/nginx-slim:0.8
+          ports:
+            - containerPort: 80
+              name: http
+          volumeMounts:
+            - name: www
+              mountPath: /usr/share/nginx/html
+          livenessProbe:
+            httpGet:
+              port: http
+              path: /_live
+              scheme: HTTP
+          readinessProbe:
+            httpGet:
+              port: http
+              path: /_ready
+              scheme: HTTP
+          startupProbe:
+            httpGet:
+              port: http
+              path: /_ready
+              scheme: HTTP
+  volumeClaimTemplates:
+    - metadata:
+        name: www
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        storageClassName: standard
+        resources:
+          requests:
+            storage: 64Mi

@@ -1,48 +1,34 @@
-use std::collections::BTreeMap;
+mod cancelable_stream;
+pub(crate) mod cli;
+pub(crate) mod errors;
+mod pod;
 
-use anyhow::Context;
-use futures::{stream::AbortHandle, StreamExt, TryStreamExt};
-use tokio::{
-    io::{AsyncRead, AsyncWrite},
-    net::TcpListener,
-    task::JoinHandle,
+use crate::{
+    cli::{parse_args, Forward},
+    errors::MyError,
 };
-use tokio_stream::wrappers::TcpListenerStream;
-use tracing::*;
-
-use k8s_openapi::api::core::v1::Service;
-use k8s_openapi::{api::core::v1::Pod, apimachinery::pkg::util::intstr::IntOrString};
+use cli::ControlArgs;
+use futures::{future::join_all, StreamExt, TryStreamExt};
+use k8s_openapi::{api::core::v1::{Pod, Service}, apimachinery::pkg::util::intstr::IntOrString};
 use kube::{
     api::{Api, ListParams},
     Client, Config,
 };
-
-pub(crate) mod cancelable_stream;
-pub(crate) mod cli;
-pub(crate) mod errors;
-use crate::errors::MyError;
-use crate::{
-    cancelable_stream::CancelableReadWrite,
-    cli::{cli, Forward},
-};
+use std::{collections::BTreeMap, net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr}};
+use tokio::{net::TcpListener, task::JoinHandle};
+use tokio_stream::{wrappers::TcpListenerStream, StreamMap};
+use tracing::*;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let matches = cli().get_matches();
-
-    let context = matches.get_one::<String>("context");
-    let namespace = matches.get_one::<String>("namespace");
-    // this unwrap should not error as cli().get_matches() should return help if no forwards are provided
-    let forwards = matches.get_many::<String>("forwards").unwrap();
-
-    let compact_output = matches.get_one::<bool>("compact");
+    let args = parse_args();
 
     let format = tracing_subscriber::fmt::format()
         .without_time()
         .with_level(false)
         .with_target(false);
 
-    if Some(&true) == compact_output {
+    if args.compact {
         tracing_subscriber::fmt()
             .event_format(format.compact())
             .with_max_level(tracing::Level::INFO)
@@ -55,100 +41,142 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let kube_opts = kube::config::KubeConfigOptions {
-        context: context.map(|s| (*s).clone()),
+        context: args.context,
         cluster: None,
         user: None,
     };
     let mut config = Config::from_kubeconfig(&kube_opts).await?;
-    if let Some(ns) = namespace {
-        config.default_namespace = (*ns).clone();
+    if let Some(ns) = args.namespace {
+        config.default_namespace = ns;
     }
 
     let client = Client::try_from(config)?;
 
-    let mut handles = Vec::<JoinHandle<anyhow::Result<()>>>::with_capacity(forwards.len());
-
-    for (i, arg) in forwards.enumerate() {
-        let forward = Forward::parse(arg)?;
-
-        let service_api: Api<Service> = match forward.namespace {
-            Some(ns) => Api::namespaced(client.clone(), ns),
-            None => Api::default_namespaced(client.clone()),
-        };
-        let pod_api: Api<Pod> = match forward.namespace {
-            Some(ns) => Api::namespaced(client.clone(), ns),
-            None => Api::default_namespaced(client.clone()),
-        };
-
-        let service = service_api.get(forward.service_name).await?;
-        let service_spec = service
-            .spec
-            .ok_or_else(|| MyError::ServiceNotFound(forward.service_name.to_string()))?;
-        let selector = service_spec
-            .selector
-            .ok_or_else(|| MyError::ServiceMissingSelectors(forward.service_name.to_string()))?;
-
-        let pod_port: IntOrString = match forward.service_port.parse::<i32>() {
-            Ok(p) => Ok(IntOrString::Int(p)),
-            Err(_) => service_spec
-                .ports
-                .and_then(|pl| {
-                    pl.into_iter()
-                        .find(|p| p.name == Some(forward.service_port.to_string()))
-                })
-                .map(|p| p.target_port.unwrap_or(IntOrString::Int(p.port)))
-                .ok_or_else(|| {
-                    MyError::MissingNamedPort(
-                        forward.service_port.to_string(),
-                        forward.service_name.to_string(),
-                    )
-                }),
-        }?;
-
-        let _forward_span = info_span!(
-            "forward",
-            target = format!(
-                "{namespace}/{service_name}:{service_port}",
-                namespace = forward
-                    .namespace
-                    .unwrap_or_else(|| client.default_namespace()),
-                service_name = forward.service_name,
-                service_port = forward.service_port
+    let handles: anyhow::Result<Vec<JoinHandle<anyhow::Result<()>>>> =
+        join_all(
+                args.forwards
+                    .iter()
+                    .map(|forward| create_forward(client.clone(), forward, args.control.clone()))
             )
-        )
-        .entered();
-
-        let socket = TcpListener::bind(forward.local_address).await?;
-        info!(local_addr = forward.local_address.to_string(), "bound");
-
-        handles.insert(
-            i,
-            tokio::spawn(
-                serve(
-                    socket,
-                    pod_api,
-                    selector_into_list_params(&selector),
-                    pod_port,
-                )
-                .in_current_span(),
-            ),
-        );
-    }
+            .await
+            .into_iter()
+            .collect();
 
     info!("Ctrl-C to stop the server");
-    futures::future::join_all(handles).await;
+    join_all(handles?).await;
 
     Ok(())
 }
 
+fn get_service_api(namespace: Option<&String>, client: Client) -> Api<Service> {
+    match namespace {
+        Some(ns) => Api::namespaced(client, ns.as_str()),
+        None => Api::default_namespaced(client),
+    }
+}
+
+fn get_pod_api(namespace: Option<&String>, client: Client) -> Api<Pod> {
+    match namespace {
+        Some(ns) => Api::namespaced(client, ns.as_str()),
+        None => Api::default_namespaced(client)
+    }
+}
+
+async fn create_forward(
+    client: Client,
+    forward: &Forward,
+    args: ControlArgs,
+) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
+    let default_namespace = client.default_namespace().to_owned();
+
+    let service_api = get_service_api(forward.namespace.as_ref(), client);
+
+    let service = service_api.get(forward.service_name.as_str()).await?;
+    let service_spec = service
+        .spec
+        .ok_or_else(|| MyError::ServiceNotFound(forward.service_name.to_string()))?;
+    let selector = service_spec
+        .selector
+        .ok_or_else(|| MyError::ServiceMissingSelectors(forward.service_name.to_string()))?;
+
+    let pod_port: IntOrString = match forward.service_port.parse::<i32>() {
+        Ok(p) => Ok(IntOrString::Int(p)),
+        Err(_) => service_spec
+            .ports
+            .and_then(|pl| {
+                pl.into_iter()
+                    .find(|p| p.name == Some(forward.service_port.to_string()))
+            })
+            .map(|p| p.target_port.unwrap_or(IntOrString::Int(p.port)))
+            .ok_or_else(|| {
+                MyError::MissingNamedPort(
+                    forward.service_port.to_string(),
+                    forward.service_name.to_string(),
+                )
+            }),
+    }?;
+
+    let _forward_span = info_span!(
+        "forward",
+        target = format!(
+            "{namespace}/{service_name}:{service_port}",
+            namespace = forward.namespace.as_ref().unwrap_or(&default_namespace),
+            service_name = forward.service_name,
+            service_port = forward.service_port
+        )
+    )
+    .entered();
+
+    let addr = forward.local_address.unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST));
+    let sock_addr = SocketAddr::from((addr, forward.local_port));
+    
+    let socket = TcpListener::bind(sock_addr).await?;
+    info!(local_addr = addr.to_string(), "bound");
+
+    let socket_2 = match forward.local_address {
+        Some(_) => None,
+        None => {        
+            let addr = forward.local_address.unwrap_or(IpAddr::V6(Ipv6Addr::LOCALHOST));
+            let sock_addr = SocketAddr::from((addr, forward.local_port));
+            
+            let socket = TcpListener::bind(sock_addr).await?;
+            info!(local_addr = addr.to_string(), "bound");
+
+            Some(socket)
+        }
+    };
+
+    Ok(tokio::spawn(
+        serve(
+            socket,
+            socket_2,
+            get_pod_api(forward.namespace.as_ref(), service_api.into_client()),
+            selector_into_list_params(&selector),
+            pod_port,
+            args,
+        )
+        .in_current_span(),
+    ))
+}
+
 async fn serve(
     socket: TcpListener,
+    socket_2: Option<TcpListener>,
     pod_api: Api<Pod>,
     selector: ListParams,
     pod_port: IntOrString,
+    args: ControlArgs,
 ) -> anyhow::Result<()> {
-    TcpListenerStream::new(socket)
+    let mut map = StreamMap::new();
+    map.insert(0, TcpListenerStream::new(socket));
+
+    if let Some(s) = socket_2 {
+        map.insert(1, TcpListenerStream::new(s));       
+    }    
+
+    map
         .take_until(tokio::signal::ctrl_c())
+        .map(|(_, x)| x)
         .try_for_each(|client_conn| async {
             let _connection_span = info_span!(
                 "connection",
@@ -162,10 +190,11 @@ async fn serve(
             let port = pod_port.clone();
 
             let api = pod_api.clone();
+            let args = args.clone();
 
             tokio::spawn(
                 async move {
-                    if let Err(e) = forward_connection(&api, &sel, &port, client_conn).await {
+                    if let Err(e) = pod::forward_connection(&api, &sel, &port, client_conn, args).await {
                         error!(
                             error = e.as_ref() as &dyn std::error::Error,
                             "failed to forward connection"
@@ -182,40 +211,6 @@ async fn serve(
     Ok(())
 }
 
-async fn find_pod(api: &Api<Pod>, selector: &ListParams) -> anyhow::Result<Pod> {
-    api.list(selector)
-        .await?
-        .items
-        .into_iter()
-        .find(|p| {
-            p.status.as_ref().map_or(false, |s| {
-                s.conditions.as_ref().map_or(false, |cs| {
-                    cs.iter().any(|c| c.type_ == "Ready" && c.status == "True")
-                })
-            })
-        })
-        .ok_or_else(|| MyError::MatchingReadyPodNotFound().into())
-}
-
-fn port_to_int(pod_port: &IntOrString, pod: &Pod) -> anyhow::Result<u16> {
-    match pod_port.clone() {
-        IntOrString::Int(i) => {
-            u16::try_from(i).map_err(|_| MyError::CouldNotFindPort(pod_port.clone()).into())
-        }
-        IntOrString::String(n) => pod
-            .spec
-            .clone()
-            .and_then(|s| {
-                s.containers
-                    .into_iter()
-                    .flat_map(|c| c.ports.unwrap_or_default())
-                    .find(|p| p.name == Some(n.clone()))
-            })
-            .and_then(|p| u16::try_from(p.container_port).ok())
-            .ok_or_else(|| MyError::CouldNotFindPort(pod_port.clone()).into()),
-    }
-}
-
 fn selector_into_list_params(selectors: &BTreeMap<String, String>) -> ListParams {
     let labels = selectors
         .iter()
@@ -230,33 +225,4 @@ fn selector_into_list_params(selectors: &BTreeMap<String, String>) -> ListParams
         });
 
     ListParams::default().labels(&labels)
-}
-
-async fn forward_connection(
-    pod_api: &Api<Pod>,
-    selector: &ListParams,
-    pod_port: &IntOrString,
-    mut client_conn: impl AsyncRead + AsyncWrite + Unpin,
-) -> anyhow::Result<()> {
-    let pod = find_pod(pod_api, selector).await?;
-
-    let port = port_to_int(pod_port, &pod)?;
-    let pod_name = pod.metadata.name.unwrap(); // how on earth you would end up here without a pod name is beyond me
-
-    info!(pod_name = pod_name, pod_port = port, "forwarding");
-
-    let mut forwarder = pod_api.portforward(pod_name.as_str(), &[port]).await?;
-    let mut upstream_conn = forwarder
-        .take_stream(port)
-        .context("port not found in forwarder")?;
-
-    let (_abort_handle, abort_registration) = AbortHandle::new_pair();
-    let mut u = CancelableReadWrite::new(&mut upstream_conn, &abort_registration);
-    let mut c = CancelableReadWrite::new(&mut client_conn, &abort_registration);
-
-    tokio::io::copy_bidirectional(&mut c, &mut u).await?;
-
-    forwarder.join().await?;
-    trace!("connection closed");
-    Ok(())
 }

@@ -11,7 +11,7 @@ opt-level = "z"  # Optimize for size.
 lto = true
 
 [dependencies]
-kube = { version = "0.88.1", default-features = false, features = ["client", "ws", "rustls-tls"] }
+kube = { version = "0.88.1", default-features = false, features = ["client", "ws", "rustls-tls", "runtime"] }
 k8s-openapi = { version = "0.21.0", default-features = false, features = ["v1_26"] }
 anyhow = "1.0.79"
 thiserror = "1.0.56"
@@ -21,7 +21,9 @@ tokio-stream = { version = "0.1.14", features = ["net"] }
 tracing = "0.1.40"
 tracing-subscriber = "0.3.18"
 serde_json = "1.0.112"
-clap = "4.4.18"
+clap = { version = "4.4.18", features = ["derive"] }
+byte-unit = "5.1.4"
+rand = "0.8.5"
 
 [package.metadata.cross.build]
 xargo = false
