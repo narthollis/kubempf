@@ -5,16 +5,43 @@ Tool to forward and maintain multiple port forwards to kubernetes pods
 ## Usage
 
 ```
-Usage: kubempf [OPTIONS] <FORWARD>...
+Multi-service port proxying tool for Kubernetes
+
+Usage: kubempf [OPTIONS] <[[LOCAL_ADDRESS:]LOCAL_PORT:][NAMESPACE/]SERVICE:PORT>...
 
 Arguments:
-  <FORWARD>...  [[LOCAL_ADDRESS:]LOCAL_PORT:][namespace/]service:port
+  <[[LOCAL_ADDRESS:]LOCAL_PORT:][NAMESPACE/]SERVICE:PORT>...
+          Establish a new port forward - multiple entries can be speficied.
+
+          SERVICE:PORT - Binds to localhost (127.0.0.1 and ::1) on PORT and forwards connections to PORT on SERVICE in the default namespace
+          NAMESPACE/SERVICE:PORT - Binds to localhost (127.0.0.1 and ::1) on PORT and forwards connections to PORT on SERVICE in NAMESPACE
+          LOCAL_PORT:SERVICE:PORT - Binds to localhost (127.0.0.1 and ::1) on LOCAL_PORT and forwards connections to PORT on SERVICE in the default namespace
+          LOCAL_ADDRESS:LOCAL_PORT:SERVICE:PORT - Binds to LOCAL_ADDRESS on LOCAL_PORT and forwards connections to PORT on SERVICE in the default namespace
 
 Options:
-  -c, --context [<CONTEXT>]      Kubernetes Context
-  -n, --namespace [<NAMESPACE>]  Default Kubernetes Namespace to match services in
-      --compact                  Enable compact console output
-  -h, --help                     Print help
+  -c, --context <CONTEXT>
+          Kubernetes Context
+
+  -n, --namespace <NAMESPACE>
+          Default Kubernetes Namespace to match services in
+
+      --compact
+          Enable compact console output
+
+      --ignore-readiness
+          Don't check the readiness of the pod when selecting which pod to forward to
+
+      --close-on-unready
+          Close the connection when the pod goes unready
+
+      --randomise
+          Chose the pod to connect to randomly instead of the first in the list
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
 ```
 
 ### Forwards
@@ -45,8 +72,11 @@ selector.
 
 ### Arguments
 
-| Short | Long        | Description                                          |
-| ----- | ----------- | ---------------------------------------------------- |
-| -c    | --context   | Name of the context from the kube config to use      |
-| -n    | --namespace | Default Kubernetes namespace to find the services in |
-|       |             | Enable compact console output                        |
+| Short | Long               | Description                                              |
+| ----- | ------------------ | -------------------------------------------------------- |
+| -c    | --context          | Name of the context from the kube config to use          |
+| -n    | --namespace        | Default Kubernetes namespace to find the services in     |
+|       | --compact          | Enable compact console output                            |
+|       | --ignore-readiness | Ignores Ready state when selecting the pod to forward to | 
+|       | --close-on-unready | Close open connections when the pod switches to unready  | 
+|       | --randomise        | Randomly select which pod should be forwarded to         | 
