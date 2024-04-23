@@ -11,7 +11,7 @@ Usage: kubempf [OPTIONS] <[[LOCAL_ADDRESS:]LOCAL_PORT:][NAMESPACE/]SERVICE:PORT>
 
 Arguments:
   <[[LOCAL_ADDRESS:]LOCAL_PORT:][NAMESPACE/]SERVICE:PORT>...
-          Establish a new port forward - multiple entries can be speficied.
+          Establish a new port forward - multiple entries can be specified.
 
           SERVICE:PORT - Binds to localhost (127.0.0.1 and ::1) on PORT and forwards connections to PORT on SERVICE in the default namespace
           NAMESPACE/SERVICE:PORT - Binds to localhost (127.0.0.1 and ::1) on PORT and forwards connections to PORT on SERVICE in NAMESPACE

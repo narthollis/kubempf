@@ -7,7 +7,7 @@ use crate::errors::MyError;
 #[command(author, version, about)]
 #[command(long_about = "Multi-service port proxying tool for Kubernetes")]
 pub struct CliArgs {
-    /// Establish a new port forward - multiple entries can be speficied.
+    /// Establish a new port forward - multiple entries can be specified.
     /// 
     /// SERVICE:PORT - Binds to localhost (127.0.0.1 and ::1) on PORT and forwards connections to PORT on SERVICE in the default namespace
     /// NAMESPACE/SERVICE:PORT - Binds to localhost (127.0.0.1 and ::1) on PORT and forwards connections to PORT on SERVICE in NAMESPACE
