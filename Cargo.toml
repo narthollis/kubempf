@@ -14,13 +14,13 @@ lto = true
 kube = { version = "0.90.0", default-features = false, features = ["client", "ws", "rustls-tls", "runtime"] }
 k8s-openapi = { version = "0.21.1", default-features = false, features = ["v1_26"] }
 anyhow = "1.0.82"
-thiserror = "1.0.58"
+thiserror = "1.0.59"
 futures = "0.3.30"
 tokio = { version = "1.37.0", default-features = false, features = ["rt-multi-thread", "net", "macros"] }
 tokio-stream = { version = "0.1.15", features = ["net"] }
 tracing = "0.1.40"
 tracing-subscriber = "0.3.18"
-serde_json = "1.0.115"
+serde_json = "1.0.116"
 clap = { version = "4.5.4", features = ["derive"] }
 byte-unit = "5.1.4"
 rand = "0.8.5"
