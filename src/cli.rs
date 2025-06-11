@@ -8,7 +8,7 @@ use crate::errors::MyError;
 #[command(long_about = "Multi-service port proxying tool for Kubernetes")]
 pub struct CliArgs {
     /// Establish a new port forward - multiple entries can be specified.
-    /// 
+    ///
     /// SERVICE:PORT - Binds to localhost (127.0.0.1 and ::1) on PORT and forwards connections to PORT on SERVICE in the default namespace
     /// NAMESPACE/SERVICE:PORT - Binds to localhost (127.0.0.1 and ::1) on PORT and forwards connections to PORT on SERVICE in NAMESPACE
     /// LOCAL_PORT:SERVICE:PORT - Binds to localhost (127.0.0.1 and ::1) on LOCAL_PORT and forwards connections to PORT on SERVICE in the default namespace
@@ -45,7 +45,6 @@ pub struct ControlArgs {
     pub randomise: bool,
 }
 
-
 pub fn parse_args() -> CliArgs {
     CliArgs::parse()
 }
@@ -69,7 +68,9 @@ impl Forward {
         let bits: Vec<&str> = (*arg).rsplitn(4, ':').collect();
         if bits.len() == 4 {
             if bits[3].starts_with('[') && bits[3].ends_with(']') {
-                local_address = Some(IpAddr::V6(bits[3][1..(bits[3].len() - 1)].parse::<Ipv6Addr>()?));
+                local_address = Some(IpAddr::V6(
+                    bits[3][1..(bits[3].len() - 1)].parse::<Ipv6Addr>()?,
+                ));
             } else {
                 local_address = Some(IpAddr::V4(bits[3].parse::<Ipv4Addr>()?));
             }
@@ -170,7 +171,10 @@ mod tests {
 
         assert_eq!(fwd.service_name, "test");
         assert_eq!(fwd.service_port, "1234");
-        assert_eq!(fwd.local_address, Some(IpAddr::from([0, 0, 0, 0, 0, 0, 0, 1])));
+        assert_eq!(
+            fwd.local_address,
+            Some(IpAddr::from([0, 0, 0, 0, 0, 0, 0, 1]))
+        );
         assert_eq!(fwd.local_port, 8080);
     }
 
@@ -182,6 +186,239 @@ mod tests {
         assert_eq!(fwd.service_name, "test");
         assert_eq!(fwd.service_port, "1234");
         assert_eq!(fwd.local_address, None);
-        assert_eq!(fwd.local_port,  1234);
+        assert_eq!(fwd.local_port, 1234);
+    }
+
+    #[test]
+    fn complex_namespace_and_ipv4_address() {
+        let fwd = Forward::parse("192.168.1.100:9000:my-namespace/my-service:8080").unwrap();
+
+        assert_eq!(fwd.namespace, Some("my-namespace".to_owned()));
+        assert_eq!(fwd.service_name, "my-service");
+        assert_eq!(fwd.service_port, "8080");
+        assert_eq!(
+            fwd.local_address,
+            Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)))
+        );
+        assert_eq!(fwd.local_port, 9000);
+    }
+
+    #[test]
+    fn complex_namespace_and_ipv6_address() {
+        let fwd = Forward::parse("[2001:db8::1]:9000:kube-system/dns-service:53").unwrap();
+
+        assert_eq!(fwd.namespace, Some("kube-system".to_owned()));
+        assert_eq!(fwd.service_name, "dns-service");
+        assert_eq!(fwd.service_port, "53");
+        assert_eq!(
+            fwd.local_address,
+            Some(IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1)))
+        );
+        assert_eq!(fwd.local_port, 9000);
+    }
+
+    #[test]
+    fn namespace_with_local_port_and_named_port() {
+        let fwd = Forward::parse("8080:production/api-service:http").unwrap();
+
+        assert_eq!(fwd.namespace, Some("production".to_owned()));
+        assert_eq!(fwd.service_name, "api-service");
+        assert_eq!(fwd.service_port, "http");
+        assert_eq!(fwd.local_address, None);
+        assert_eq!(fwd.local_port, 8080);
+    }
+
+    #[test]
+    fn empty_string_fails() {
+        let result = Forward::parse("");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn single_component_fails() {
+        let result = Forward::parse("service");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn too_many_colons_fails() {
+        let result = Forward::parse("a:b:c:d:e");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn invalid_ipv4_address_fails() {
+        let result = Forward::parse("999.999.999.999:8080:service:80");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn invalid_ipv6_address_fails() {
+        let result = Forward::parse("[invalid::ipv6::address]:8080:service:80");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn invalid_local_port_fails() {
+        let result = Forward::parse("99999:service:80");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn zero_local_port_allowed() {
+        let result = Forward::parse("0:service:80");
+        assert!(result.is_ok());
+        let fwd = result.unwrap();
+        assert_eq!(fwd.local_port, 0);
+        assert_eq!(fwd.service_port, "80");
+    }
+
+    #[test]
+    fn service_name_with_multiple_slashes() {
+        let fwd = Forward::parse("namespace/sub/service:8080").unwrap();
+
+        assert_eq!(fwd.namespace, Some("namespace".to_owned()));
+        assert_eq!(fwd.service_name, "sub/service");
+        assert_eq!(fwd.service_port, "8080");
+    }
+
+    #[test]
+    fn port_range_max_value() {
+        let fwd = Forward::parse("65535:service:80").unwrap();
+        assert_eq!(fwd.local_port, 65535);
+    }
+
+    #[test]
+    fn port_range_exceeds_max_fails() {
+        let result = Forward::parse("65536:service:80");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn service_port_zero_allowed() {
+        let fwd = Forward::parse("8080:service:0").unwrap();
+        assert_eq!(fwd.service_port, "0");
+        assert_eq!(fwd.local_port, 8080);
+    }
+
+    #[test]
+    fn malformed_ipv6_brackets() {
+        let result = Forward::parse("[::1:8080:service:80");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn ipv6_without_brackets_fails() {
+        let result = Forward::parse("::1:8080:service:80");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn localhost_ipv4() {
+        let fwd = Forward::parse("127.0.0.1:8080:service:80").unwrap();
+        assert_eq!(fwd.local_address, Some(IpAddr::V4(Ipv4Addr::LOCALHOST)));
+    }
+
+    #[test]
+    fn localhost_ipv6() {
+        let fwd = Forward::parse("[::1]:8080:service:80").unwrap();
+        assert_eq!(fwd.local_address, Some(IpAddr::V6(Ipv6Addr::LOCALHOST)));
+    }
+
+    #[test]
+    fn edge_case_high_ports() {
+        let fwd = Forward::parse("service:65535").unwrap();
+        assert_eq!(fwd.local_port, 65535);
+        assert_eq!(fwd.service_port, "65535");
+    }
+
+    mod proptest_cases {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn valid_port_numbers_succeed(port in 1u16..=65535) {
+                let spec = format!("service:{}", port);
+                let fwd = Forward::parse(&spec).unwrap();
+                prop_assert_eq!(fwd.local_port, port);
+                prop_assert_eq!(fwd.service_port, port.to_string());
+            }
+
+            #[test]
+            fn service_names_with_alphanumeric_succeed(
+                name in "[a-zA-Z][a-zA-Z0-9-]{0,20}",
+                port in 1u16..=65535
+            ) {
+                let spec = format!("{}:{}", name, port);
+                let fwd = Forward::parse(&spec).unwrap();
+                prop_assert_eq!(fwd.service_name, name);
+            }
+
+            #[test]
+            fn namespace_names_with_alphanumeric_succeed(
+                namespace in "[a-zA-Z][a-zA-Z0-9-]{0,20}",
+                service in "[a-zA-Z][a-zA-Z0-9-]{0,20}",
+                port in 1u16..=65535
+            ) {
+                let spec = format!("{}/{}:{}", namespace, service, port);
+                let fwd = Forward::parse(&spec).unwrap();
+                prop_assert_eq!(fwd.namespace, Some(namespace));
+                prop_assert_eq!(fwd.service_name, service);
+            }
+        }
+    }
+
+    mod cli_args_tests {
+        use super::*;
+
+        #[test]
+        fn control_args_default_values() {
+            let args = ControlArgs {
+                ignore_readiness: false,
+                close_on_unready: false,
+                randomise: false,
+            };
+
+            assert!(!args.ignore_readiness);
+            assert!(!args.close_on_unready);
+            assert!(!args.randomise);
+        }
+
+        #[test]
+        fn control_args_all_flags_set() {
+            let args = ControlArgs {
+                ignore_readiness: true,
+                close_on_unready: true,
+                randomise: true,
+            };
+
+            assert!(args.ignore_readiness);
+            assert!(args.close_on_unready);
+            assert!(args.randomise);
+        }
+
+        #[test]
+        fn cli_args_clone_and_debug() {
+            let forward = Forward::parse("test:8080").unwrap();
+            let args = CliArgs {
+                forwards: vec![forward],
+                context: Some("test-context".to_string()),
+                namespace: Some("test-namespace".to_string()),
+                compact: true,
+                control: ControlArgs {
+                    ignore_readiness: true,
+                    close_on_unready: false,
+                    randomise: true,
+                },
+            };
+
+            let cloned = args.clone();
+            assert_eq!(args, cloned);
+
+            let debug_str = format!("{:?}", args);
+            assert!(debug_str.contains("test-context"));
+            assert!(debug_str.contains("test-namespace"));
+        }
     }
 }

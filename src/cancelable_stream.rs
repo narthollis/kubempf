@@ -56,10 +56,10 @@ where
                             true => {
                                 mut_self.finished = true;
                                 Poll::Ready(Ok(()))
-                            },
+                            }
                             false => Poll::Ready(Err(e)),
                         }
-                    },
+                    }
                 },
                 Poll::Pending => Poll::Pending,
             }

@@ -3,18 +3,27 @@ pub(crate) mod cli;
 pub(crate) mod errors;
 mod pod;
 
+#[cfg(test)]
+mod tests;
+
 use crate::{
     cli::{parse_args, Forward},
     errors::MyError,
 };
 use cli::ControlArgs;
 use futures::{future::join_all, StreamExt, TryStreamExt};
-use k8s_openapi::{api::core::v1::{Pod, Service}, apimachinery::pkg::util::intstr::IntOrString};
+use k8s_openapi::{
+    api::core::v1::{Pod, Service},
+    apimachinery::pkg::util::intstr::IntOrString,
+};
 use kube::{
     api::{Api, ListParams},
     Client, Config,
 };
-use std::{collections::BTreeMap, net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr}};
+use std::{
+    collections::BTreeMap,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+};
 use tokio::{net::TcpListener, task::JoinHandle};
 use tokio_stream::{wrappers::TcpListenerStream, StreamMap};
 use tracing::*;
@@ -52,15 +61,14 @@ async fn main() -> anyhow::Result<()> {
 
     let client = Client::try_from(config)?;
 
-    let handles: anyhow::Result<Vec<JoinHandle<anyhow::Result<()>>>> =
-        join_all(
-                args.forwards
-                    .iter()
-                    .map(|forward| create_forward(client.clone(), forward, args.control.clone()))
-            )
-            .await
-            .into_iter()
-            .collect();
+    let handles: anyhow::Result<Vec<JoinHandle<anyhow::Result<()>>>> = join_all(
+        args.forwards
+            .iter()
+            .map(|forward| create_forward(client.clone(), forward, args.control.clone())),
+    )
+    .await
+    .into_iter()
+    .collect();
 
     info!("Ctrl-C to stop the server");
     join_all(handles?).await;
@@ -78,7 +86,7 @@ fn get_service_api(namespace: Option<&String>, client: Client) -> Api<Service> {
 fn get_pod_api(namespace: Option<&String>, client: Client) -> Api<Pod> {
     match namespace {
         Some(ns) => Api::namespaced(client, ns.as_str()),
-        None => Api::default_namespaced(client)
+        None => Api::default_namespaced(client),
     }
 }
 
@@ -127,18 +135,22 @@ async fn create_forward(
     )
     .entered();
 
-    let addr = forward.local_address.unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST));
+    let addr = forward
+        .local_address
+        .unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST));
     let sock_addr = SocketAddr::from((addr, forward.local_port));
-    
+
     let socket = TcpListener::bind(sock_addr).await?;
     info!(local_addr = addr.to_string(), "bound");
 
     let socket_2 = match forward.local_address {
         Some(_) => None,
-        None => {        
-            let addr = forward.local_address.unwrap_or(IpAddr::V6(Ipv6Addr::LOCALHOST));
+        None => {
+            let addr = forward
+                .local_address
+                .unwrap_or(IpAddr::V6(Ipv6Addr::LOCALHOST));
             let sock_addr = SocketAddr::from((addr, forward.local_port));
-            
+
             let socket = TcpListener::bind(sock_addr).await?;
             info!(local_addr = addr.to_string(), "bound");
 
@@ -171,11 +183,10 @@ async fn serve(
     map.insert(0, TcpListenerStream::new(socket));
 
     if let Some(s) = socket_2 {
-        map.insert(1, TcpListenerStream::new(s));       
-    }    
+        map.insert(1, TcpListenerStream::new(s));
+    }
 
-    map
-        .take_until(tokio::signal::ctrl_c())
+    map.take_until(tokio::signal::ctrl_c())
         .map(|(_, x)| x)
         .try_for_each(|client_conn| async {
             let _connection_span = info_span!(
@@ -194,7 +205,9 @@ async fn serve(
 
             tokio::spawn(
                 async move {
-                    if let Err(e) = pod::forward_connection(&api, &sel, &port, client_conn, args).await {
+                    if let Err(e) =
+                        pod::forward_connection(&api, &sel, &port, client_conn, args).await
+                    {
                         error!(
                             error = e.as_ref() as &dyn std::error::Error,
                             "failed to forward connection"
