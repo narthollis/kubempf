@@ -11,7 +11,7 @@ opt-level = "z"  # Optimize for size.
 lto = true
 
 [dependencies]
-kube = { version = "1.0.0", default-features = false, features = ["client", "ws", "rustls-tls", "runtime"] }
+kube = { version = "2.0.0", default-features = false, features = ["client", "ws", "rustls-tls", "runtime"] }
 k8s-openapi = { version = "0.25.0", default-features = false, features = ["v1_31"] }
 anyhow = "1.0.82"
 thiserror = "2.0.0"
