@@ -2,6 +2,8 @@
 name = "kubempf"
 version = "0.11.2"
 edition = "2024"
+repository = "https://github.com/narthollis/kubempf"
+authors = ["Nicholas Steicke"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -9,6 +11,11 @@ edition = "2024"
 strip = true  # Automatically strip symbols from the binary.
 opt-level = "z"  # Optimize for size.
 lto = true
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
 
 [dependencies]
 kube = { version = "3.0.0", default-features = false, features = ["client", "ws", "rustls-tls", "runtime"] }

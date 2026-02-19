@@ -14,7 +14,7 @@ use kube::{
     runtime::{watcher, watcher::Config, WatchStreamExt},
     Api,
 };
-use rand::{Rng, RngExt};
+use rand::{RngExt};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::pin;
 use tracing::{error, info, info_span, Instrument};
