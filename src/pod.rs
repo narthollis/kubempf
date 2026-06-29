@@ -14,7 +14,7 @@ use kube::{
     runtime::{watcher, watcher::Config, WatchStreamExt},
     Api,
 };
-use rand::Rng;
+use rand::{RngExt};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::pin;
 use tracing::{error, info, info_span, Instrument};
@@ -152,7 +152,7 @@ async fn find_pod(api: &Api<Pod>, selector: &ListParams, ignore_readiness: bool,
         });
 
     let count = match randomise {
-        true => rand::thread_rng().gen_range(0..length),
+        true => rand::rng().random_range(0..length),
         false => 0,
     };
 

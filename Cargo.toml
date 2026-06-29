@@ -1,7 +1,9 @@
 [package]
 name = "kubempf"
-version = "0.11.0"
-edition = "2021"
+version = "0.12.0"
+edition = "2024"
+repository = "https://github.com/narthollis/kubempf"
+authors = ["Nicholas Steicke"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -10,20 +12,25 @@ strip = true  # Automatically strip symbols from the binary.
 opt-level = "z"  # Optimize for size.
 lto = true
 
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
+
 [dependencies]
-kube = { version = "0.90.0", default-features = false, features = ["client", "ws", "rustls-tls", "runtime"] }
-k8s-openapi = { version = "0.21.1", default-features = false, features = ["v1_26"] }
+kube = { version = "3.0.0", default-features = false, features = ["client", "ws", "rustls-tls", "ring", "runtime"] }
+k8s-openapi = { version = "0.27.0", default-features = false, features = ["v1_35"] }
 anyhow = "1.0.82"
-thiserror = "1.0.58"
+thiserror = "2.0.0"
 futures = "0.3.30"
 tokio = { version = "1.37.0", default-features = false, features = ["rt-multi-thread", "net", "macros"] }
 tokio-stream = { version = "0.1.15", features = ["net"] }
 tracing = "0.1.40"
 tracing-subscriber = "0.3.18"
-serde_json = "1.0.115"
+serde_json = "1.0.116"
 clap = { version = "4.5.4", features = ["derive"] }
 byte-unit = "5.1.4"
-rand = "0.8.5"
+rand = "0.10.0"
 
 [package.metadata.cross.build]
 xargo = false
@@ -32,4 +39,3 @@ default-target = "x86_64-unknown-linux-gnu"
 
 #[package.metadata.cross.target.x86_64-unknown-linux-gnu]
 #[package.metadata.cross.target.x86_64-pc-windows-gnu]
-

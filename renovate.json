@@ -1,17 +1,24 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
-    "config:base"
+    "mergeConfidence:all-badges",
+    "config:recommended"
   ],
+  "assignees": ["narthollis"],
+  "reviewers": ["narthollis"],
+  "assignAutomerge": true,
   "lockFileMaintenance": {
     "enabled": true,
     "automerge": true
   },
   "packageRules": [
     {
-      "matchPackagePatterns": ["kube", "k8s-openapi"],
       "matchManagers": ["cargo"],
-      "groupName": "rust kube"
+      "groupName": "rust kube",
+      "matchPackageNames": [
+        "/kube/",
+        "/k8s-openapi/"
+      ]
     }
   ]
 }
