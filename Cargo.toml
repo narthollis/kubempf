@@ -19,7 +19,7 @@ lto = "thin"
 
 [dependencies]
 kube = { version = "3.0.0", default-features = false, features = ["client", "ws", "rustls-tls", "ring", "runtime"] }
-k8s-openapi = { version = "0.27.0", default-features = false, features = ["v1_35"] }
+k8s-openapi = { version = "0.28.0", default-features = false, features = ["v1_35"] }
 anyhow = "1.0.82"
 thiserror = "2.0.0"
 futures = "0.3.30"
