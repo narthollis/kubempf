@@ -4,14 +4,14 @@ members = ["cargo:."]
 # Config for 'dist'
 [dist]
 # The preferred dist version to use in CI (Cargo.toml SemVer syntax)
-cargo-dist-version = "0.30.4"
+cargo-dist-version = "0.33.1"
 # CI backends to support
 ci = "github"
 # The installers to generate for each app
 installers = []
 # Target platforms to build apps for (Rust target-triple syntax)
 targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
-# GitHub already handles creating a source tarball for releases
+# Generate and dist a source tarball
 source-tarball = false
-
+# Whether to enable GitHub Attestations
 github-attestations = true
